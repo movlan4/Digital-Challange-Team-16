@@ -1,0 +1,27 @@
+Süni İntellekt (AI) İstifadəsindən Bəyannamə və Metodologiya
+Bu sənəd Team-16 tərəfindən inkişaf etdirilən ictimai nəqliyyatın monitorinqi və simulyasiyası layihəsində Böyük Dil Modellərinin (LLM) və süni intellekt alətlərinin istifadə çərçivəsini və məqsədlərini ətraflı şəkildə izah edir. Süni intellekt layihədə birbaşa qərarverici kimi deyil, inkişaf prosesini sürətləndirən və optimallaşdıran köməkçi vasitə kimi tətbiq edilmişdir.
+
+1. Kod Generasiyası və Arxitektur Dizayn
+Baza Strukturunun Qurulması: FastAPI çərçivəsində RESTful API arxitekturasının, asinxron (async) marşrutizasiya (routing) sisteminin və qovluq iyerarxiyasının ilkin dizaynında AI təkliflərindən istifadə edilmişdir.
+
+Pydantic Modelləri: Məlumatların validasiyası (Data Validation) üçün tələb olunan mürəkkəb Pydantic sxemlərinin (məsələn, telemetriya məlumatları, sərnişin sorğuları) yazılması və tip yoxlanışı mexanizmlərinin tətbiqi sürətləndirilmişdir.
+
+Məlumat Bazası (Database) Sorğuları: ORM (Object-Relational Mapping) üzərindən asinxron məlumat bazası əməliyyatlarının yazılması və sorğuların optimallaşdırılmasında dəstək alınmışdır.
+
+2. Mürəkkəb Alqoritmlər və Məlumatların Emalı (Data Parsing)
+Geofəza (Geospatial) Məlumatlarının İşlənməsi: import_kmz.py faylında xarici .kmz fayllarından KML məlumatlarının çıxarılması, XML strukturunun oxunması və bu datanın sistemin anlaya biləcəyi JSON formatına çevrilməsi üçün xüsusi parsing alqoritmləri AI dəstəyi ilə hazırlanmışdır.
+
+OSM və OSRM İnteqrasiyası: OpenStreetMap və Open Source Routing Machine vasitəsilə alınan xam məlumatların (koordinatlar, dayanacaqlar, yolların qrafikləri) layihənin daxili məntiqinə uyğunlaşdırılması üçün skriptlərin yazılmasında LLM istifadə olunmuşdur.
+
+3. Simulyasiya, Riyazi Modelləmə və Anomaliya
+Simulyasiya və Zamanlama: simulation.py və clock.py daxilində avtobusların virtual hərəkət dinamikasını, dayanacaqlarda gözləmə müddətlərini və hərəkət qrafiklərini hesablamaq üçün riyazi modellərin qurulmasında məsləhətlər alınmışdır.
+
+Sıxlıq və Anomaliya Alqoritmləri: density.py və anomaly.py üçün nəqliyyat vasitəsinin marşrutdan kənara çıxmasını (route deviation), qəfil dayanmaları və sərnişin sıxlığının kritik həddə çatmasını təsbit edən həndəsi və statistik düsturların (məsələn, Haversine formulu ilə məsafə hesablamaları) koda tətbiqi.
+
+4. Test Avtomatlaşdırılması və Debugging
+Unit və İnteqrasiya Testləri: Layihənin test qovluğundakı ssenarilərin (anomaly, auth, consensus, network, simulation) hazırlanmasında pytest freymvorkuna uyğun asinxron test funksiyalarının, "mock" obyektlərin və kənar (edge-case) hallarının yaradılmasında AI istifadə edilmişdir.
+
+Xəta Analizi: Mürəkkəb asinxron proseslərdə yaranan yaddaş sızıntılarının (memory leak), bloklama (blocking) xətalarının və HTTP 500 xətalarının tapılması və həlli üçün jurnalların (logs) analizi.
+
+5. Məsuliyyət və İnsan Nəzarəti (Human-in-the-Loop)
+AI tərəfindən istehsal olunan heç bir kod parçası birbaşa "copy-paste" edilərək məhsul mühitinə (production) daxil edilməmişdir. Hər bir modul komanda üzvləri tərəfindən kod baxışından (code review) keçirilmiş, təhlükəsizlik açıqlarına qarşı yoxlanılmış və sistemin ümumi memarlığına inteqrasiya edilmişdir. Sistemin işlək vəziyyəti, performansı və təhlükəsizliyi tam olaraq Team-16 komandasının məsuliyyətindədir.

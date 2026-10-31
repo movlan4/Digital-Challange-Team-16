@@ -1,0 +1,180 @@
+# Texniki İzah Sənədi
+
+## Ağıllı Nəqliyyat və Kraudsorsinq Mühərriki
+### Avtobusların izlənməsi və ictimai nəqliyyatın idarə olunması platforması
+
+**Müsabiqə:** Digital Azerbaijan Challenge 2026
+**Komanda:** Team 16
+
+| Komanda üzvü | Məsuliyyət sahəsi |
+|---|---|
+| Mehdizadə Əli | Backend və API |
+| Mirzəyev Sənan | Frontend və UI/UX |
+| Əmənov Mövlan | Aİ inteqrasiyası, testləşdirmə və sənədləşmə |
+
+---
+
+## 1. Məşğul olunan problem
+
+### 1.1. Şəhər nəqliyyatında mövcud vəziyyət
+
+Bakının ictimai nəqliyyat şəbəkəsi 240-dan artıq avtobus xəttini əhatə edir. İş günlərinin səhər və axşam pik saatlarında 28 May, Gənclik, Nəriman Nərimanov, Koroğlu, 20 Yanvar və Əhmədli–Həzi Aslanov istiqamətlərində sərnişin axını xətlərin buraxılış qabiliyyətini aşır. Bunun nəticəsi gündəlik həyatda aydın görünür: avtobuslar ilk dayanacaqlarda dolur, sonrakı dayanacaqlarda gözləyən sərnişinlər isə dolu avtobusları yola salmaq məcburiyyətində qalır.
+
+Problem iki tərəfli məlumat çatışmazlığından qaynaqlanır:
+
+- **Sərnişin tərəfində** avtobusun nə vaxt gələcəyi və nə dərəcədə dolu olduğu barədə etibarlı, real vaxt məlumatı yoxdur. Sərnişinin "bu avtobus həddindən artıq doludur" siqnalını ötürmək üçün sadə bir kanalı da mövcud deyil.
+- **Operator tərəfində** hansı avtobusun və ya xəttin həddindən artıq yükləndiyi çox vaxt gecikmə ilə – sürücülərin məlumatı və ya şikayətlər vasitəsilə – öyrənilir. Ehtiyat avtobusun ayrılması barədə qərar obyektiv göstəricilərə deyil, subyektiv qiymətləndirməyə əsaslanır və tez-tez pik saat artıq bitdikdən sonra qəbul edilir.
+
+Bundan əlavə, ictimai nəqliyyatda geniş yayılmış "avtobusların toplaşması" (bus bunching) hadisəsi vəziyyəti ağırlaşdırır: gecikən avtobus hər dayanacaqda daha çox sərnişin götürdüyü üçün daha da gecikir, arxadakı avtobus isə ona yaxınlaşaraq demək olar ki, boş hərəkət edir.
+
+### 1.2. Platformanın təklif etdiyi həll
+
+Platforma bu boşluğu iki məlumat mənbəyini birləşdirərək aradan qaldırır: **avtobusların GPS telemetriyası** və **sərnişinlərin kraudsorsinq hesabatları**.
+
+- **Sərnişin üçün:** dayanacaq və ya avtobus nömrəsi üzrə axtarış, xəritədən dayanacağın seçilməsi, həmin dayanacaqdan keçən bütün xətlərin və yaxınlaşan avtobusların real vaxt gəliş müddəti (ETA), hər avtobusun ayrıca sıxlıq səviyyəsi və konkret avtobus barədə "Aşağı / Orta / Yüksək" hesabatı göndərmək imkanı.
+- **Operator üçün:** sərnişin hesabatlarının real vaxtda daxil olduğu idarəetmə paneli, hər avtobusun və hər xəttin sıxlıq göstəriciləri, şəbəkə xəritəsi və avtomatik anomaliya xəbərdarlıqları. Hesabatlar avtomatik bağlanmır, yalnız operator tərəfindən baxılaraq həll edilir.
+- **Obyektiv qərar meyarı:** avtobus 10 dəqiqə ərzində fasiləsiz "Yüksək" sıxlıqda qalarsa, sistem operatora avtomatik olaraq **"Əlavə avtobus ehtiyatı ayrılmalıdır"** xəbərdarlığı göndərir.
+- **Etibarlılıq:** tək bir sərnişinin hesabatı avtobusun statusunu dəyişmir. Status yalnız bir neçə müxtəlif sərnişinin razılaşdığı halda (konsensus) və GPS davranışı ilə birlikdə qiymətləndirilərək yenilənir.
+
+---
+
+## 2. Layihənin strukturu
+
+### 2.1. Ümumi arxitektura
+
+Sistem üç əsas qatdan ibarətdir: məlumat qatı, server (backend) qatı və istifadəçi interfeysi (frontend) qatı. Bütün komponentlər Docker Compose vasitəsilə vahid əmrlə işə salınır.
+
+```
+ Vahid giriş səhifəsi (bütün rollar)
+        │  rola görə yönləndirmə
+        ├── Sərnişin paneli      ── SSE /api/stream
+        ├── Operator paneli      ── SSE /api/operator/stream
+        └── Master admin paneli  ── /api/admin/*
+                     │
+             nginx (statik fayllar + API proksi)
+                     │
+             FastAPI backend
+             ├── API qatı (rol əsaslı icazə yoxlaması)
+             ├── Xidmət qatı (TransitEngine – biznes qaydaları, fon prosesləri)
+             ├── Domen xidmətləri (şəbəkə, simulyasiya, telemetriya,
+             │   sıxlıq, anomaliya, autentifikasiya, e-poçt, hadisələr)
+             └── Məlumat qatı (SQLite)
+```
+
+### 2.2. Məlumat qatı və nəqliyyat şəbəkəsi
+
+Əsas mənbə kimi təqdim olunmuş `buslines.kmz` faylı istifadə olunur. Fayl 243 xətt həndəsəsini (239 unikal xətt nömrəsi) ehtiva edir, lakin dayanacaq nöqtələrini daxil etmir və yeddi xəttin həndəsəsi hissələrə bölünmüşdür. Bu çatışmazlıqları aradan qaldırmaq üçün idxal modulu (`tools/import_kmz.py`) aşağıdakı addımları yerinə yetirir:
+
+1. Xətlərin hissələri hərəkət ardıcıllığına uyğun birləşdirilir.
+2. Həndəsədəki boşluqlar OpenStreetMap yol şəbəkəsi əsasında işləyən OSRM marşrutlaşdırma xidməti ilə real yollar üzrə doldurulur.
+3. OpenStreetMap-dən (Overpass API) şəhərin bütün avtobus dayanacaqları yüklənir və 35 metr radiusda keçən hər xəttə bağlanır – nəticədə 1 715 dayanacaq əldə edilir.
+4. Həndəsə sadələşdirilir və nəticə tətbiqə daxil edilən `network.json` faylında saxlanılır. Beləliklə, işləyən sistem internet bağlantısından asılı olmur.
+
+### 2.3. Backend modulları
+
+| Modul | Təyinatı |
+|---|---|
+| `api/` | Nazik REST və SSE marşrutları: autentifikasiya, admin, şəbəkə, sərnişin, operator, real vaxt axını |
+| `engine.py` | Xidmət qatı: biznes qaydaları, hesabat və xəbərdarlıq iş axını, fon prosesləri |
+| `services/network.py` | Xətlər, dayanacaqlar, marşrut həndəsəsi, axtarış, ən yaxın dayanacaq |
+| `services/simulation.py` | GPS lent simulyatoru: avtobusların real həndəsə üzrə hərəkəti və dayanacaqlarda dayanması |
+| `services/telemetry.py` | GPS davranışına əsasən sıxlığın qiymətləndirilməsi |
+| `services/density.py` | Sərnişin konsensusu və GPS göstəricilərinin birləşdirilməsi (hibrid mühərrik) |
+| `services/anomaly.py` | 10 dəqiqəlik fasiləsiz "Yüksək" sıxlıq qaydası və xəbərdarlıqlar |
+| `services/auth.py`, `mailer.py` | İstifadəçilər, rollar, sessiyalar, şifrə bərpası, e-poçt göndərişi |
+| `repository.py` | SQLite: istifadəçilər, sessiyalar, şifrə bərpa kodları, hesabatlar, xəbərdarlıqlar |
+
+### 2.4. Əsas iş məntiqi
+
+**Dayanacaqlarda real dayanma.** Simulyasiyada hər avtobus növbəti dayanacağın koordinatında dəqiq dayanır və real müddət gözləyir. Dayanma müddəti həmin xəttin əvvəlki avtobusundan bəri dayanacaqda toplanan sərnişinlərin sayından asılıdır; mərkəzi qovşaq dayanacaqlarında və pik saatlarda (Bakı vaxtı ilə 07:30–09:30 və 17:30–19:30) bu müddət artır. Bu yanaşma avtobusların toplaşması hadisəsini təbii şəkildə əks etdirir. Gəliş müddəti hesablanarkən yol boyu dayanacaqlarda gözlənilən dayanma vaxtı da nəzərə alınır.
+
+**GPS əsaslı sıxlıq qiymətləndirməsi.** Hər avtobus üçün üç göstərici təhlil edilir:
+- dayanacaqlarda orta dayanma müddəti (çəki 50%);
+- dayanacaqlar arasında hərəkət sürəti (çəki 20%);
+- eyni xətt üzrə öndəki avtobusla aradakı məsafənin planlaşdırılmış intervala nisbəti (çəki 30%).
+
+**Sərnişin hesabatlarının konsensusu.** Tək hesabat statusu dəyişmir:
+- hər sərnişinin yalnız son hesabatı bir səs kimi qəbul olunur;
+- səsin çəkisi hər 5 dəqiqədən bir yarıya enir;
+- hesabatlar yalnız 15 dəqiqəlik zaman çərçivəsində ən azı 3 müxtəlif sərnişin razılaşdıqda nəzərə alınır;
+- əksəriyyətdən kəskin fərqlənən tək-tük səslər (məsələn, bir neçə "Aşağı" arasında yeganə "Yüksək") nəzərə alınmır.
+
+**Hibrid mühərrik.** Konsensusun yekun qiymətdəki payı razılaşan sərnişinlərin sayı artdıqca tədricən 85%-ə qədər yüksəlir, qalan hissəni GPS qiymətləndirməsi təşkil edir. Xəttin sıxlığı onun avtobuslarının orta göstəricisi kimi hesablanır.
+
+**Hesabatların təkrarlanmaması.** Hər sərnişin göndərişi unikal identifikatorla qeydə alınır və verilənlər bazası səviyyəsində məhdudiyyət qoyulur. Nəticədə şəbəkə xətası və ya ikiqat klik halında belə bir göndəriş yalnız bir hesabat kimi saxlanılır.
+
+### 2.5. Frontend modulları
+
+| Səhifə | Təyinatı |
+|---|---|
+| Vahid giriş səhifəsi | Bütün istifadəçilər üçün giriş, qeydiyyat və şifrə bərpası; rola görə avtomatik yönləndirmə |
+| Sərnişin paneli | Axtarış, dayanacaq seçimi, yaxınlaşan avtobuslar, xətt görünüşü, hesabat göndərmə, "Mənim hesabatlarım" |
+| Operator paneli | Göstəricilər, şəbəkə xəritəsi, xəbərdarlıqlar, hesabatlar qutusu, xətt və avtobus sıxlığı cədvəlləri |
+| Master admin paneli | Qeydiyyatdan keçmiş istifadəçilərin siyahısı və rolların (Sərnişin / Operator) təyin edilməsi |
+
+Xəritədə vizual yüklənməni azaltmaq üçün avtobuslar və dayanacaqlar yalnız yaxınlaşdırma səviyyəsi 15 və yuxarı olduqda və yalnız ekranın görünən hissəsində göstərilir. Avtobuslar "avtobus ikonu + xətt nömrəsi + kvadrat daxilində avtobusun sıra nömrəsi" formatında, dayanacaqlar isə standart vektor "avtobus dayanacağı" ikonu ilə təsvir olunur.
+
+### 2.6. Təhlükəsizlik və etibarlılıq
+
+- Şifrələr PBKDF2-SHA256 alqoritmi ilə heşlənir; sessiya tokenlərinin yalnız heşi saxlanılır, token HttpOnly və SameSite kukisi vasitəsilə ötürülür.
+- Ardıcıl 5 uğursuz giriş cəhdindən sonra müvəqqəti məhdudiyyət tətbiq olunur.
+- Şifrə bərpa kodu 15 dəqiqə etibarlıdır, 5 cəhdlə məhdudlaşır, birdəfəlikdir və mövcud olmayan e-poçt ünvanları üçün eyni cavab qaytarılır (hesabların aşkarlanmasının qarşısı alınır).
+- Hər API marşrutu yalnız icazə verilmiş rollar üçün əlçatandır (daxil olmayan istifadəçiyə 401, uyğun olmayan rola 403 cavabı).
+- Sistem 67 avtomatlaşdırılmış testlə yoxlanılır.
+
+---
+
+## 3. Seçilmiş texnologiyalar
+
+| Sahə | Texnologiya | Seçim səbəbi |
+|---|---|---|
+| Backend | Python 3.12, FastAPI, Pydantic, Uvicorn | Asinxron fon prosesləri, güclü məlumat validasiyası, avtomatik OpenAPI sənədləşməsi |
+| Verilənlər bazası | SQLite | Quraşdırma tələb etmir, tranzaksiya dəstəyi və unikal məhdudiyyətlər təmin edir; bütün SQL bir modulda cəmləşdiyi üçün PostgreSQL-ə keçid asandır |
+| Real vaxt rejimi | Server-Sent Events (SSE) | Serverdən müştəriyə birtərəfli ötürmə üçün WebSocket-dən sadə və etibarlıdır; operator üçün ayrıca axın hesabatların sərnişinlərə ötürülməsinin qarşısını alır |
+| Frontend | React 18, htm | Komponent əsaslı interfeys; Node.js quraşdırılmasını və yığma (build) mərhələsini tələb etmir |
+| Xəritə | Leaflet, OpenStreetMap | Açıq mənbəli, yüngül və lisenziya xərci olmayan interaktiv xəritə |
+| Coğrafi məlumat | Overpass API, OSRM | OpenStreetMap əsasında dayanacaqlar, küçə adları və yol həndəsəsi |
+| Dizayn | Montserrat şrifti, Tabler Icons | Vahid tipoqrafiya və peşəkar vektor ikon dəsti (o cümlədən "avtobus dayanacağı" ikonu) |
+| Konteynerləşdirmə | Docker, Docker Compose, nginx | Bir əmrlə bütün sistemin işə salınması; statik faylların və API-nin vahid ünvandan təqdim olunması |
+| Testləşdirmə | pytest | Sabit saat, yaddaşda işləyən verilənlər bazası və test şəbəkəsi ilə deterministik testlər |
+
+---
+
+## 4. Gələcək inkişaf imkanları
+
+1. **Real məlumat mənbələrinə inteqrasiya.** Simulyatorun BakuBus / AYNA avtobuslarının real GPS (AVL) lenti ilə əvəz edilməsi; GTFS cədvəllərinin qoşulması və istiqamətə görə ayrılmış dayanacaqlar.
+2. **Avtomatik sərnişin sayğacları.** BakıKart validasiyaları və avtobusdaxili sayğac məlumatlarının hibrid mühərrikə əlavə edilməsi.
+3. **Proqnozlaşdırma.** Xətt, saat və həftənin günü üzrə tarixi məlumatlara əsaslanan maşın öyrənməsi modelləri ilə sıxlığın 15–30 dəqiqə əvvəlcədən proqnozlaşdırılması və ehtiyat avtobusların qabaqcadan yönləndirilməsi.
+4. **Dispetçer optimallaşdırması.** Ən uyğun depo və tələb olunan ehtiyat avtobus sayı barədə avtomatik tövsiyələr.
+5. **Hesabatların etibarlılıq reytinqi.** İstifadəçilərin tarixi dəqiqliyinə əsaslanan çəki sistemi və koordinasiyalı saxta hesabatların aşkarlanması.
+6. **Mobil tətbiq və bildirişlər.** PWA, push bildirişləri ("növbəti boş avtobus 6 dəqiqəyə"), Telegram bot və dayanacaqlarda elektron tablolar; Azərbaycan, rus və ingilis dillərində interfeys.
+7. **Miqyaslanma.** PostgreSQL və TimescaleDB, bir neçə server nüsxəsi üçün Redis pub/sub, Kubernetes, işçilər üçün vahid giriş (SSO) və audit jurnalı.
+8. **Metro ilə inteqrasiya.** Avtobus–metro keçid məntəqələrində (28 May, Koroğlu və s.) sıxlığın birgə idarə olunması.
+9. **Əlçatanlıq.** Əlilliyi olan şəxslər üçün avtobusların uyğunluq məlumatı və ekran oxuyucularına tam uyğunluq.
+
+---
+
+## 5. Aİ istifadəsi haqqında bəyannamə
+
+Layihənin hazırlanmasında Anthropic şirkətinin **Claude Code** alətindən (Claude modeli) proqramlaşdırma köməkçisi kimi istifadə olunmuşdur.
+
+**Komandanın rolu.**
+- **Problemin müəyyənləşdirilməsi və tələblər:** müsabiqənin qiymətləndirmə meyarlarının təhlili və hər inkişaf mərhələsinin tələbləri komanda tərəfindən müəyyənləşdirilib. Buraya real KMZ məlumatlarına keçid, rol modeli və vahid giriş, simulyasiya edilmiş sıxlığın ləğvi, hibrid mühərrik, hesabatlar üçün konsensus həddi və vizual standartlar daxildir.
+- **Təkliflərin seçimi:** komanda alətin təklif etdiyi texniki həllər arasında seçim edib, qəbul etdiyi kompromisləri təsdiqləyib və nəticəni yoxlayıb.
+- **Vizual identiklik:** layihənin loqosu və vizual identikliyi komandaya məxsusdur.
+
+**Alətin rolu.**
+- **Kod və testlər:** komandanın müəyyən etdiyi tələblər əsasında backend və frontend mənbə kodunun, avtomatlaşdırılmış testlərin və sənədlərin ilkin variantlarının böyük hissəsi bu alət vasitəsilə yaradılıb.
+- **Texniki təkliflər:** alət arxitektura və alqoritmlər üzrə təkliflər irəli sürüb. Buraya bucket əsaslı anomaliya qaydası, dayanma müddəti modeli, GPS əsaslı qiymətləndirmə və konsensus mexanizmi daxildir.
+- **Yoxlama:** alət yaratdığı kodu testlər və brauzerdə yoxlamaqla sınaqdan keçirib.
+
+**Yoxlama və məsuliyyət.**
+- **Avtomatlaşdırılmış testlər:** hər dəyişiklikdən sonra test dəsti işə salınıb; son vəziyyətdə 67 testin hamısı uğurla keçir.
+- **Funksional yoxlama:** əsas ssenarilər işləyən sistem üzərində yoxlanılıb: qeydiyyat, axtarış, hesabat göndərmə, operator iş axını, rolların təyini və şifrə bərpası.
+- **Məsuliyyət sahələri:** komanda üzvləri öz sahələrinə görə məsuliyyət daşıyır:
+  - Mehdizadə Əli – backend və API;
+  - Mirzəyev Sənan – frontend və UI/UX;
+  - Əmənov Mövlan – Aİ alətinin istifadəsi, testləşdirmə və sənədləşmə.
+- **Müdafiə:** təqdim olunan kodun hər bir modulunu müdafiə zamanı izah etmək komandanın öhdəliyidir.
+
+**Məlumatlar.** Sistemdəki bütün canlı məlumatlar (GPS mövqeləri) simulyasiyadır. Şəxsi məlumatlar yalnız giriş üçün zəruri olan e-poçt ünvanı ilə məhdudlaşır.
