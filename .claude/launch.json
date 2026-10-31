@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "smart-transit",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\6606Student\\Documents\\Digital Challange Team 16\\run-local.ps1"],
+      "port": 8000
+    }
+  ]
+}

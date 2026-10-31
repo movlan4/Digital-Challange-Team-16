@@ -1,0 +1,45 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    environment:
+      DATABASE_PATH: /data/transit.db
+      # Master admin account. Override via a .env file next to this compose file (see .env.example).
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@transit.az}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Operator-Baku-2026}
+      SECURE_COOKIES: ${SECURE_COOKIES:-false}
+      # Password reset e-mails (empty SMTP_HOST = codes are printed to the backend log)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      MAIL_FROM: ${MAIL_FROM:-Baku Smart Transit <no-reply@transit.az>}
+      SIM_RUSH_HOUR: ${SIM_RUSH_HOUR:-auto}
+      ANOMALY_WINDOW_MINUTES: "10"
+      ANOMALY_CHECK_INTERVAL_SECONDS: "10"
+    volumes:
+      - transit-data:/data
+    ports:
+      - "8000:8000"   # direct API access + Swagger at http://localhost:8000/docs
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Run the test suite in a container:  docker compose --profile test run --rm tests
+  tests:
+    build:
+      context: ./backend
+      target: test
+    profiles: ["test"]
+
+volumes:
+  transit-data:

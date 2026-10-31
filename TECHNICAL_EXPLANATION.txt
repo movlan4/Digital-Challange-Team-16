@@ -1,0 +1,289 @@
+SMART TRANSIT AND CROWDSOURCING ENGINE - TECHNICAL EXPLANATION (v4)
+Digital Azerbaijan Challenge 2026 - Team 16
+=====================================================================
+
+1. THE PROBLEM: PEAK-HOUR CROWDING ON BAKU'S BUSES
+---------------------------------------------------------------------
+Baku's bus network has more than 240 lines. On weekday mornings and
+evenings, buses on the main corridors fill up at the first stops:
+28 May, Koroglu, Nariman Narimanov, 20 Yanvar and the Ahmadli /
+Hazi Aslanov axis. Passengers further down the line watch full buses go
+past without knowing when one with space will come. Operators usually
+learn that a particular bus is overloaded from complaints, after the
+peak is over.
+
+What is missing:
+  * Passengers have no live view of which buses are coming to their stop,
+    and no simple way to say "this specific bus is packed".
+  * Operators have no live, per-bus picture of crowding, no inbox of
+    passenger reports they can act on, and no objective trigger for
+    sending reserve buses.
+
+v2 addresses both: it is built on the real bus-line data, measures
+crowdedness per bus (not per route), and puts passenger reports straight
+into an operator workflow.
+
+
+2. DATA: THE PROVIDED KMZ + OPENSTREETMAP
+---------------------------------------------------------------------
+The provided buslines.kmz contains 243 placemarks (239 distinct line
+numbers). Each placemark is a polyline, with only the line number,
+FID and Shape_Leng as attributes. It contains NO bus stops, and seven
+lines are split into several disconnected parts.
+
+The import tool (backend/tools/import_kmz.py) turns this into a complete
+network:
+  * Geometry repair: parts are chained in travel order. Gaps between
+    parts (> 25 m) and jumps inside a part (> 1 km) are filled with
+    road-following geometry from OSRM, which routes on the OpenStreetMap
+    road graph. A fill much longer than the gap (> 2.5x, e.g. one-way
+    detours) is rejected. 13 gaps were filled; 9 stayed straight.
+  * Stops: every OSM bus stop in the network's area is downloaded
+    (Overpass API), and each stop is attached to every line that passes
+    within 35 m (grid spatial index), with its position along the line.
+    Result: 1,715 stops. Unnamed stops get the OSM street name. If
+    Overpass is unreachable, stops are derived from the line geometry
+    instead (one about every 500 m, shared where lines overlap).
+  * Lines are simplified (Douglas-Peucker, 3 m) and named
+    "start - turnaround". 233 source lines are closed out-and-back loops.
+The output, app/data/network.json (2.2 MB), is loaded at start-up, so
+the running system needs no internet.
+
+
+3. WHAT THE SYSTEM DOES
+---------------------------------------------------------------------
+Unified login (index.html)
+  * One sign-in screen for all users (e-mail + password). After login
+    the user is sent to the dashboard for their role: passengers to the
+    Passenger view; operators and the master admin to the Operator view.
+    Every page re-checks the role and redirects anyone who does not
+    belong there.
+  * "Forgot password": enter your e-mail, receive a 6-digit code, and set
+    a new password.
+
+Master admin panel (admin.html)
+  * Lists all registered users (search, filter by role). The admin can
+    assign the Passenger or Operator role. The changed user is signed out
+    and lands on their new dashboard at the next login.
+
+Passenger interface (passenger.html)
+  * Dual search in one box, with results split into Bus stops and Bus
+    numbers. Diacritics are ignored ("neriman" finds "Neriman"), and
+    exact line-number matches come first.
+  * Choose the current stop from search, the map (every stop can be
+    tapped), or "Nearest stop" (GPS).
+  * Stop view: every line through the stop, plus every approaching bus
+    with ETA, distance and its own crowdedness from passenger reports
+    (Low/Medium/High + number of reports, or "No reports").
+  * Line view: the route on the map, its buses and their crowdedness,
+    and its stops.
+  * Buses are shown everywhere as a "bus icon + number" badge in the
+    line colour, with a crowdedness dot.
+  * Report a specific bus (Low / Medium / High + optional comment),
+    and follow the report's handling status under "My reports".
+
+Map rendering and UI standard (both interfaces)
+  * Individual buses and stops are hidden when the map is zoomed out.
+    They render only from zoom level 15, and only those inside the
+    visible area (+15 % margin); markers are created and removed as the
+    user pans. A "Zoom in to see N buses" hint replaces them at city
+    scale.
+  * Stops use a vector "bus stop" icon (Tabler Icons) on the map and in
+    every list. All icons come from the Tabler icon library; there are no
+    emoji. The typeface is Montserrat throughout.
+  * Each bus is drawn as a badge: bus icon, line number, and the bus's own
+    number in a square. "88-02" is shown as 2 (leading dashes and zeros
+    removed). A dashed outline marks a bus currently standing at a stop.
+  * The site logo is served from frontend/assets/logo.png.
+
+Operator interface (operator.html) - operators and the master admin
+  * Live passenger report inbox (Open / In progress / Resolved). New
+    reports appear immediately, with a highlight, a toast and a tab
+    counter. Operators move a report on by hand: Start handling, then
+    Resolve with a note.
+  * Crowdedness of every individual bus: sortable, searchable, filterable,
+    showing load, recent reports, open reports and the HIGH streak
+    toward the alert.
+  * Network map: all 243 lines, with each bus coloured by its own
+    crowdedness.
+  * Anomaly alerts ("Additional bus reserve must be allocated"), which
+    the operator acknowledges and then resolves by hand.
+
+
+4. CORE LOGIC
+---------------------------------------------------------------------
+4.1 Hybrid crowdedness: passenger reports + GPS telemetry
+  Crowding is never injected. It is inferred from two signals.
+  a) Passenger report consensus (services/density.py). A single report
+     never changes a bus's status:
+       - One passenger = one vote: only each passenger's latest report on
+         the bus within the 15-minute window counts.
+       - A vote's weight halves every 5 minutes (a fresh report = 1.0).
+       - Threshold: the reports count only once at least 3 different
+         passengers voted and their combined weight is >= 1.5. Until then
+         they are "pending", and the status comes from GPS alone (or stays
+         "No data").
+       - Outliers: votes two levels away from the weighted median (a
+         lone HIGH among LOWs) are ignored while they carry < 40 % of the
+         weight.
+       - The remaining votes are averaged by weight (LOW=1, MEDIUM=2,
+         HIGH=3).
+       - Confidence = kept vote weight / 4 (max 1). It sets how strongly
+         the consensus counts against GPS.
+  b) GPS telemetry (services/telemetry.py), scored from three behaviours
+     visible in raw AVL positions:
+       - dwell time: mean stop duration over the last 6 stops, compared
+         with a 30 s baseline (weight 0.5). Long stops mean many people
+         boarding.
+       - speed: smoothed speed between stops, compared with 24 km/h
+         free flow (weight 0.2).
+       - clustering / headway: gap to the bus ahead on the same line,
+         compared with even spacing (weight 0.3). A bus far behind the
+         previous one picks up everyone who has been waiting, so it fills
+         up; a bus bunched right behind another runs nearly empty.
+     GPS score = 1 + 2 x weighted index (1..3). At least 2 stops must be
+     observed first.
+  Fusion: share = 0.85 x confidence;
+          score = share x consensus + (1 - share) x GPS.
+  Density therefore rises gradually with agreement. On a bus whose GPS
+  looks normal, 1-2 HIGH reports change nothing, 3 agreeing passengers
+  lift it to MEDIUM and about 4 to HIGH (verified live on the running
+  system). Either signal is used alone when the other is missing; "No
+  data" appears only when neither exists.
+  Level: HIGH >= 2.5, MEDIUM >= 1.5, otherwise LOW. Each level records its
+  source (reports+gps / reports / gps).
+  Line (route) crowding = mean hybrid score of the line's buses, plus the
+  number of buses at High and the line's average stop time. It is pushed
+  live (SSE "routes"), colours the operator network map, and appears on
+  passenger line chips and search results.
+
+4.2 Anomaly rule (10 continuous minutes, per bus)
+  Every 10 s the job samples each bus's hybrid level. The last 10+ minutes
+  are split into 2-minute buckets. A bucket is HIGH if it has at least one
+  sample and >= 60 % of its samples are HIGH. An empty bucket or a
+  non-HIGH bucket breaks the streak. When the streak reaches 10 minutes,
+  one alert is opened for the line, naming the bus. Alerts are never
+  closed automatically. After an operator resolves one, the line needs a
+  fresh 10-minute streak before it can alert again, so it does not
+  alert again straight away.
+
+4.3 Reports: exactly once, closed only by hand
+  * The client creates a submission_id (UUID) for each report. SQLite
+    enforces UNIQUE(passenger_id, submission_id), and the insert uses
+    ON CONFLICT DO NOTHING. So retries, double clicks and network
+    replays return the original report (duplicate=true) and are counted
+    once, even for concurrent requests.
+  * A separate 60-second cooldown per passenger per bus limits spam.
+  * Status is OPEN -> IN_PROGRESS -> RESOLVED, changed only through the
+    operator API. Each change records which operator made it and when.
+    Invalid transitions return 409.
+
+4.4 Authentication, roles and password reset
+  * One users table with role passenger | operator | admin. Login is by
+    e-mail + password, and the response tells the client which dashboard
+    to open. Self-registration always creates a passenger. The master
+    admin (seeded from ADMIN_EMAIL / ADMIN_PASSWORD) assigns the operator
+    role; the admin role itself cannot be assigned or removed.
+  * Authorisation: every endpoint declares the roles it accepts
+    (require_roles). The answer is 401 when signed out and 403 for the
+    wrong role. Roles are read from the database on every request, and a
+    role change also deletes the user's sessions.
+  * Forgot password: a 6-digit code (secrets module) is e-mailed via SMTP,
+    or written to the server log when no SMTP server is configured. Only
+    its hash is stored. The code is valid for 15 minutes, allows 5
+    attempts and works once. At most one code is sent per minute, and
+    the response is identical for unknown e-mails so the endpoint cannot
+    reveal which accounts exist. A successful reset signs the user out
+    everywhere.
+  * Passwords: PBKDF2-SHA256 (200k iterations, per-user salt). Only a
+    SHA-256 hash of each session token is stored, in an HttpOnly
+    SameSite cookie. Five failed logins in 5 minutes -> HTTP 429.
+
+4.5 GPS feed simulation: realistic stops, and ETA
+  No live AVL feed is available, so the GPS feed (positions, speeds, stop
+  durations) is simulated. 548 buses (2-4 per line) drive the real line
+  geometry: out-and-back for open lines, circular for closed ones.
+  Each bus stops exactly at the coordinates of the next stop and stays
+  there for a dwell time before driving on:
+     dwell = 12 s + 2.5 s x waiting passengers (max 120 s)
+     waiting = arrival rate x time since this line's previous bus
+     arrival rate = 0.08/min per line-stop x hub factor (1 + lines/5)
+                    x 2.2 at rush hour (Baku 07:30-09:30, 17:30-19:30)
+  Buses accelerate from standstill and drive about 25 % slower at rush
+  hour. Because a late bus finds more people waiting, it falls further
+  behind while the next bus catches up. This bus bunching is exactly the
+  pattern the GPS estimator in 4.1 detects.
+  Calibration on the full network (60 simulated minutes): off-peak median
+  stop 31 s, buses standing ~24 % of the time, 82 % of buses LOW; rush
+  hour median stop 58 s, mostly MEDIUM, with a few bunched buses HIGH.
+  ETA = driving distance / smoothed speed + remaining dwell + expected
+  dwell at every stop on the way. In production this module is replaced
+  by the real AVL feed; everything downstream stays unchanged.
+
+
+5. ARCHITECTURE AND STRUCTURE
+---------------------------------------------------------------------
+  api/           Thin FastAPI routers: auth, network (shared read-only),
+                 passenger, operator, stream (SSE). Role checks in deps.py.
+  engine.py      TransitEngine, the service layer: business rules,
+                 report workflow, alert workflow, background jobs (GPS
+                 tick every 2 s, anomaly scan over passenger reports every 10 s).
+  services/      network (geometry, search, nearest stop), simulation,
+                 density, anomaly, auth, events (SSE pub/sub with a
+                 public audience and an operator-only audience), clock.
+  repository.py  SQLite: passengers, operators, sessions,
+                 passenger_reports, bus_alerts.
+  tools/         import_kmz.py (KMZ + OSM -> network.json).
+  frontend/      React 18 + htm (no build step), Leaflet + OSM tiles.
+                 Shared components: BusBadge, TransitMap, AuthCard.
+  Deployment     Docker Compose: backend (Uvicorn, SQLite volume, health
+                 check) + frontend (nginx, /api proxy with SSE buffering
+                 off). A test profile runs pytest. run-local.ps1 for
+                 machines without Docker.
+
+
+6. TECHNOLOGY CHOICES
+---------------------------------------------------------------------
+  FastAPI + Pydantic  Async background jobs, validation, OpenAPI docs.
+  SQLite              Transactional, enforces the deduplication
+                      constraint, zero setup; swappable for PostgreSQL.
+  Server-Sent Events  One-way push, with a separate operator stream so
+                      reports never reach passengers.
+  React + htm         Components without a Node toolchain (the lab PC
+                      had no Node.js).
+  Leaflet canvas      1,700+ clickable stops and 548 moving markers
+                      render smoothly.
+  OSM / OSRM          Open data for stops, street names and road-aligned
+                      gap filling.
+  pytest              67 deterministic tests (frozen clock, in-memory DB,
+                      fixture network, seeded simulator, captured e-mail).
+  Tabler Icons        MIT-licensed vector icon webfont with a real
+                      "bus-stop" glyph; Montserrat via Google Fonts.
+
+
+7. RELIABILITY
+---------------------------------------------------------------------
+  * The deduplication constraint lives in the database, not only in code.
+  * Each scheduler iteration is wrapped in error handling.
+  * SSE slow-consumer protection; the UI falls back to polling and shows
+    a live indicator.
+  * An expired session sends the user back to the sign-in screen.
+  * Non-root container with a health check; secrets come from the
+    environment.
+
+
+8. FUTURE DEVELOPMENT
+---------------------------------------------------------------------
+  1. Real feeds: BakuBus / AYNA AVL GPS and on-board passenger counters
+     in place of the simulator; BakiKart validations as another
+     crowding signal.
+  2. Direction-aware stops (GTFS stop_times) and timetable-based ETA,
+     blended with live position.
+  3. Prediction: per line/hour/weekday crowding models, so reserves are
+     dispatched 15-30 minutes before overload.
+  4. Dispatch optimisation: recommend depot and number of reserve buses.
+  5. Report trust scoring and cross-checking against sensor data.
+  6. PWA with push notifications ("next bus with space in 6 min"),
+     Azerbaijani / Russian / English localisation.
+  7. Scale-out: PostgreSQL/TimescaleDB, Redis pub/sub for SSE, operator
+     roles and audit log, SSO for staff accounts.
